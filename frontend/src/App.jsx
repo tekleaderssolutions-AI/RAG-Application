@@ -2,14 +2,25 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Send, Database, FileText, BarChart3, Bot, User, Zap, AlertCircle, Wifi, WifiOff, RefreshCcw } from 'lucide-react';
 import axios from 'axios';
+import jsPDF from 'jspdf';
+import html2canvas from 'html2canvas';
+import {
+    LineChart, Line, BarChart, Bar, PieChart, Pie, Cell,
+    XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+    ScatterChart, Scatter, LabelList, ComposedChart
+} from 'recharts';
 
 // IMPORTANT: Update this URL whenever your ngrok session restarts in Colab
 const BASE_URL = 'https://excellently-unstaunchable-fabiola.ngrok-free.dev';
+
+const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8', '#82ca9d'];
 
 const App = () => {
     const [activeTab, setActiveTab] = useState('chat');
     const [dashboardData, setDashboardData] = useState(null);
     const [reportingData, setReportingData] = useState([]);
+    const [currentQueryData, setCurrentQueryData] = useState(null);
+    const [vizTitle, setVizTitle] = useState('Revenue Insights');
     const [messages, setMessages] = useState([
         {
             role: 'ai',
@@ -27,7 +38,6 @@ const App = () => {
         chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     };
 
-    // Connection Health Check
     const checkConnection = async () => {
         try {
             await axios.get(`${BASE_URL}/health`);
@@ -60,6 +70,8 @@ const App = () => {
             const res = await axios.get(`${BASE_URL}/dashboard`);
             if (res.data.error) throw new Error(res.data.error);
             setDashboardData(res.data);
+            // Don't overwrite currentQueryData here to keep user's query active
+            // if (!currentQueryData && res.data.top_plants) setCurrentQueryData(res.data.top_plants);
         } catch (e) {
             console.error(e);
             setDashboardData({ error: 'Failed to load dashboard data. Ensure backend is running.' });
@@ -81,8 +93,42 @@ const App = () => {
         try {
             await axios.post(`${BASE_URL}/clear-cache`);
             alert("Query cache cleared successfully.");
+            setCurrentQueryData(null); // Reset dynamic view
         } catch (e) {
             console.error(e);
+        }
+    };
+
+    const downloadPDF = async () => {
+        const reportElement = document.getElementById('pdf-report-template');
+        if (!reportElement) {
+            alert('No report to download. Please ask a question first.');
+            return;
+        }
+
+        try {
+            const canvas = await html2canvas(reportElement, {
+                scale: 2,
+                backgroundColor: '#ffffff',
+                logging: false,
+                useCORS: true
+            });
+
+            const imgData = canvas.toDataURL('image/png');
+            const pdf = new jsPDF('p', 'mm', 'a4');
+            const pdfWidth = pdf.internal.pageSize.getWidth();
+            const pdfHeight = pdf.internal.pageSize.getHeight();
+            const imgWidth = canvas.width;
+            const imgHeight = canvas.height;
+            const ratio = Math.min(pdfWidth / imgWidth, pdfHeight / imgHeight);
+            const imgX = (pdfWidth - imgWidth * ratio) / 2;
+            const imgY = 10;
+
+            pdf.addImage(imgData, 'PNG', imgX, imgY, imgWidth * ratio, imgHeight * ratio);
+            pdf.save(`SAP_COPA_Report_${new Date().toISOString().split('T')[0]}.pdf`);
+        } catch (error) {
+            console.error('PDF generation error:', error);
+            alert('Failed to generate PDF. Please try again.');
         }
     };
 
@@ -104,9 +150,7 @@ const App = () => {
                 body: JSON.stringify({ prompt })
             });
 
-            if (!response.body) {
-                throw new Error('ReadableStream not supported');
-            }
+            if (!response.body) throw new Error('ReadableStream not supported');
 
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
@@ -118,7 +162,7 @@ const App = () => {
 
                 buffer += decoder.decode(value, { stream: true });
                 const lines = buffer.split('\n');
-                buffer = lines.pop(); // Keep the last partial line in the buffer
+                buffer = lines.pop();
 
                 for (const line of lines) {
                     if (line.trim() === '') continue;
@@ -129,18 +173,26 @@ const App = () => {
                         } else if (update.type === 'result') {
                             const data = update.payload;
 
-                            // Check for error in payload
+                            // Essential: Update Dashboard/Reporting with new data
+                            if (data.data && Array.isArray(data.data)) {
+                                setCurrentQueryData(data.data);
+                                setVizTitle(prompt);
+                            } else if (Array.isArray(data)) {
+                                setCurrentQueryData(data);
+                                setVizTitle(prompt);
+                            }
+
                             if (data.error) {
                                 setMessages(prev => [...prev, {
                                     role: 'ai',
-                                    content: data.error, // Show error message
+                                    content: data.error,
                                     error: true
                                 }]);
                             } else {
                                 setMessages(prev => [...prev, {
                                     role: 'ai',
                                     content: data.summary,
-                                    data: data.data
+                                    data: data.data // Store for chat SmartChart
                                 }]);
                             }
                         }
@@ -165,54 +217,26 @@ const App = () => {
     return (
         <div className="app-container">
             <aside className="sidebar">
-                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '32px' }}>
-                    <div style={{ background: '#3b82f6', padding: '8px', borderRadius: '10px' }}>
-                        <Zap size={24} color="white" fill="white" />
+                <div style={{ marginBottom: '40px', display: 'flex', alignItems: 'center', gap: '12px' }}>
+                    <div style={{ width: '40px', height: '40px', background: 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)', borderRadius: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 0 20px rgba(59, 130, 246, 0.3)' }}>
+                        <Zap size={24} color="#fff" fill="#fff" />
                     </div>
                     <div>
-                        <h2 style={{ fontSize: '18px', fontWeight: 'bold' }}>SAP AI Agent</h2>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '4px' }}>
-                            {isConnected === null ? (
-                                <RefreshCcw size={10} className="animate-spin" color="#94a3b8" />
-                            ) : isConnected ? (
-                                <Wifi size={10} color="#10b981" />
-                            ) : (
-                                <WifiOff size={10} color="#ef4444" />
-                            )}
-                            <span style={{ fontSize: '10px', color: isConnected ? '#10b981' : '#ef4444', fontWeight: 'bold', textTransform: 'uppercase' }}>
-                                {isConnected === null ? 'Checking...' : isConnected ? 'System Online' : 'Offline'}
+                        <h1 style={{ fontSize: '20px', fontWeight: 'bold', letterSpacing: '-0.5px' }}>SAP AI Agent</h1>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                            {isConnected ? <Wifi size={12} color="#4ade80" /> : <WifiOff size={12} color="#ef4444" />}
+                            <span style={{ fontSize: '11px', color: isConnected ? '#4ade80' : '#ef4444', fontWeight: '600' }}>
+                                {isConnected ? 'SYSTEM ONLINE' : 'DISCONNECTED'}
                             </span>
                         </div>
                     </div>
                 </div>
 
                 <nav style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                    <SidebarItem
-                        icon={<Bot size={18} />}
-                        label="AI Copilot"
-                        active={activeTab === 'chat'}
-                        onClick={() => setActiveTab('chat')}
-                    />
-                    <SidebarItem
-                        icon={<Database size={18} />}
-                        label="Reporting"
-                        active={activeTab === 'reports'}
-                        onClick={() => setActiveTab('reports')}
-                    />
-                    <SidebarItem
-                        icon={<BarChart3 size={18} />}
-                        label="Dashboard"
-                        active={activeTab === 'dashboard'}
-                        onClick={() => setActiveTab('dashboard')}
-                    />
+                    <SidebarItem icon={<Bot size={18} />} label="AI Copilot" active={activeTab === 'chat'} onClick={() => setActiveTab('chat')} />
+                    <SidebarItem icon={<Database size={18} />} label="Reporting" active={activeTab === 'reports'} onClick={() => setActiveTab('reports')} />
+                    <SidebarItem icon={<BarChart3 size={18} />} label="Dashboard" active={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')} />
                 </nav>
-
-                {!isConnected && isConnected !== null && (
-                    <div style={{ marginTop: 'auto', padding: '16px', background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: '12px' }}>
-                        <p style={{ fontSize: '12px', color: '#ef4444', fontWeight: 'bold', marginBottom: '4px' }}>Connection Error</p>
-                        <p style={{ fontSize: '10px', color: '#fca5a5', lineHeight: '1.4' }}>The frontend cannot reach the backend. Please check the ngrok URL in App.jsx.</p>
-                    </div>
-                )}
             </aside>
 
             <main className="main-content">
@@ -221,182 +245,299 @@ const App = () => {
                         <div className="chat-window" style={{ flex: 1, overflowY: 'auto', padding: '20px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
                             {messages.map((m, i) => (
                                 <div key={i} className={`message-wrapper ${m.role}`} style={{ display: 'flex', justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start' }}>
-                                    <div className="bubble" style={{
-                                        maxWidth: '80%',
-                                        padding: m.role === 'user' ? '16px' : '0 16px 16px 0',
-                                        borderRadius: '16px',
-                                        background: m.role === 'user' ? '#3b82f6' : 'transparent',
-                                        border: 'none'
-                                    }}>
+                                    <div className="bubble" style={{ maxWidth: '80%', padding: m.role === 'user' ? '16px' : '0 16px 16px 0', borderRadius: '16px', background: m.role === 'user' ? '#3b82f6' : 'transparent' }}>
                                         <div style={{ fontWeight: 'bold', fontSize: '12px', marginBottom: '8px', color: m.role === 'user' ? '#fff' : '#94a3b8' }}>
                                             {m.role === 'ai' ? 'SAP Assistant' : 'Finance Manager'}
                                         </div>
                                         <div style={{ fontSize: '15px', color: '#fff' }}>{m.content}</div>
                                         {m.data && (
                                             <div style={{ marginTop: '16px' }}>
-                                                <SmartChart data={m.data} query={m.content} />
+                                                {/* Simple Table for Chat to avoid clutter */}
+                                                <div style={{ overflowX: 'auto', background: 'rgba(255,255,255,0.02)', borderRadius: '12px', padding: '10px' }}>
+                                                    <table style={{ width: '100%', fontSize: '12px', borderCollapse: 'collapse' }}>
+                                                        <thead>
+                                                            <tr style={{ borderBottom: '1px solid #334155' }}>
+                                                                {Object.keys(m.data[0]).map(k => <th key={k} style={{ padding: '8px', textAlign: 'left', color: '#94a3b8' }}>{k}</th>)}
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody>
+                                                            {m.data.slice(0, 5).map((r, idx) => (
+                                                                <tr key={idx} style={{ borderBottom: '1px solid #1e293b' }}>
+                                                                    {Object.values(r).map((v, c) => <td key={c} style={{ padding: '8px', color: '#e2e8f0' }}>{v}</td>)}
+                                                                </tr>
+                                                            ))}
+                                                        </tbody>
+                                                    </table>
+                                                </div>
                                             </div>
                                         )}
-                                        {m.error && (
-                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#ef4444', marginTop: '10px', fontSize: '13px' }}>
-                                                <AlertCircle size={14} /> Analysis Error
-                                            </div>
-                                        )}
+                                        {m.error && <div style={{ color: '#ef4444', marginTop: '10px' }}><AlertCircle size={14} /> Error</div>}
                                     </div>
                                 </div>
                             ))}
                             {loading && (
-                                <div className="message-wrapper ai" style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '8px' }}>
-                                    <div className="bubble" style={{ padding: '8px 16px', background: 'transparent', border: 'none', display: 'flex', alignItems: 'center', gap: '12px' }}>
-                                        <div className="dot-typing"></div>
-                                        <span style={{ fontSize: '13px', color: '#94a3b8', fontStyle: 'italic' }}>{progressStep || 'Thinking...'}</span>
-                                    </div>
+                                <div style={{ display: 'flex', gap: '4px', padding: '12px', background: 'rgba(255,255,255,0.05)', borderRadius: '16px', width: 'fit-content', marginLeft: '16px' }}>
+                                    <div className="dot-typing" style={{ animationDelay: '0s' }}></div>
+                                    <div className="dot-typing" style={{ animationDelay: '0.2s' }}></div>
+                                    <div className="dot-typing" style={{ animationDelay: '0.4s' }}></div>
                                 </div>
                             )}
                             <div ref={chatEndRef} />
                         </div>
-
-                        <form className="input-area" onSubmit={handleSubmit} style={{ padding: '20px', display: 'flex', gap: '12px', background: 'rgba(0,0,0,0.2)', borderTop: '1px solid rgba(255,255,255,0.1)' }}>
-                            <input
-                                type="text"
-                                placeholder="Ask about revenue, cost variance, or contribution margins..."
-                                value={input}
-                                onChange={(e) => setInput(e.target.value)}
-                                style={{ flex: 1, background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', padding: '12px 16px', borderRadius: '12px', color: '#fff' }}
-                            />
-                            <button type="submit" disabled={loading} style={{ background: '#3b82f6', color: '#fff', border: 'none', padding: '12px 24px', borderRadius: '12px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '8px', cursor: loading ? 'default' : 'pointer', opacity: loading ? 0.7 : 1 }}>
-                                <Send size={18} /> Analyze
-                            </button>
+                        <form className="input-area" onSubmit={handleSubmit} style={{ padding: '20px', display: 'flex', gap: '12px', background: 'rgba(0,0,0,0.2)' }}>
+                            <input type="text" placeholder="Ask about revenue..." value={input} onChange={(e) => setInput(e.target.value)} style={{ flex: 1, background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', padding: '12px', borderRadius: '12px', color: '#fff' }} />
+                            <button type="submit" disabled={loading} style={{ background: '#3b82f6', color: '#fff', border: 'none', padding: '12px 24px', borderRadius: '12px' }}><Send size={18} /></button>
                         </form>
                     </>
                 )}
 
                 {activeTab === 'dashboard' && (
                     <div className="dashboard-container" style={{ padding: '24px', overflowY: 'auto', height: '100%' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '32px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '32px' }}>
                             <div>
-                                <h1 style={{ fontSize: '24px', fontWeight: 'bold' }}>Executive Dashboard</h1>
-                                <p style={{ color: '#94a3b8' }}>Consolidated profitability and cost metrics</p>
+                                <h1 style={{ fontSize: '24px', fontWeight: 'bold' }}>{currentQueryData ? vizTitle : 'Executive Dashboard'}</h1>
+                                <p style={{ color: '#94a3b8' }}>{currentQueryData ? 'Dynamic Visualization from Query' : 'Consolidated profitability metrics'}</p>
                             </div>
-                            <button onClick={clearCache} style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: '#94a3b8', padding: '8px 16px', borderRadius: '8px', cursor: 'pointer' }}>Clear Cache</button>
+                            <button onClick={clearCache} style={{ background: 'rgba(255,255,255,0.05)', padding: '8px 16px', borderRadius: '8px', color: '#94a3b8', border: 'none', cursor: 'pointer' }}>Clear View</button>
                         </div>
 
-                        {dashboardData?.error ? (
-                            <div style={{ padding: '40px', background: 'rgba(255,255,255,0.03)', borderRadius: '20px', textAlign: 'center', border: '1px dashed rgba(255,255,255,0.1)' }}>
-                                <AlertCircle size={48} color="#ef4444" style={{ marginBottom: '16px', opacity: 0.5 }} />
-                                <h3 style={{ fontSize: '18px', marginBottom: '8px' }}>Dashboard Offline</h3>
-                                <p style={{ color: '#94a3b8' }}>{dashboardData.error}</p>
-                            </div>
-                        ) : dashboardData && dashboardData.stats ? (
-                            <>
-                                <div className="kpi-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '20px', marginBottom: '32px' }}>
-                                    <KpiCard label="Total Gross Revenue" value={`$${((dashboardData.stats.total_gross_revenue || 0) / 1e6).toFixed(1)}M`} color="#3b82f6" />
-                                    <KpiCard label="Total Net Revenue" value={`$${((dashboardData.stats.total_net_revenue || 0) / 1e6).toFixed(1)}M`} color="#10b981" />
-                                    <KpiCard label="Avg Margin %" value={`${(dashboardData.stats.avg_margin_pct || 0).toFixed(1)}%`} color="#fbbf24" />
-                                    <KpiCard label="Cost Variance" value={`$${((dashboardData.stats.total_cost_variance || 0) / 1e6).toFixed(1)}M`} color="#ef4444" />
+                        {/* Render Charts if Data Exists */}
+                        {(() => {
+                            const chartData = currentQueryData || dashboardData?.top_plants;
+                            if (!chartData || chartData.length === 0) return (
+                                <div style={{ padding: '100px', textAlign: 'center', opacity: 0.5 }}>
+                                    <BarChart3 size={48} style={{ marginBottom: '16px' }} />
+                                    <p>Ask a question in AI Copilot to generate visualizations.</p>
                                 </div>
+                            );
 
-                                {dashboardData.top_plants && (
-                                    <div style={{ background: 'rgba(255,255,255,0.03)', padding: '24px', borderRadius: '20px', border: '1px solid rgba(255,255,255,0.1)' }}>
-                                        <h3 style={{ marginBottom: '24px', color: '#94a3b8' }}>Top 5 Plants by Revenue</h3>
-                                        <div style={{ height: '200px', display: 'flex', alignItems: 'flex-end', gap: '20px' }}>
-                                            {dashboardData.top_plants.map((p, i) => (
-                                                <div key={i} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                                                    <div style={{ width: '100%', height: `${(p.revenue / Math.max(...dashboardData.top_plants.map(x => x.revenue))) * 100}%`, background: '#3b82f6', borderRadius: '4px 4px 0 0' }}></div>
-                                                    <span style={{ marginTop: '12px', fontSize: '11px', color: '#94a3b8' }}>{p.plant || p.Plant}</span>
-                                                </div>
-                                            ))}
+                            const keys = Object.keys(chartData[0]);
+                            const labelKey = keys.find(k => typeof chartData[0][k] === 'string') || keys[0];
+                            const valKey = keys.find(k => typeof chartData[0][k] === 'number') || keys[1];
+
+                            return (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+                                    <div style={{ background: 'rgba(255,255,255,0.02)', padding: '24px', borderRadius: '20px', height: '400px' }}>
+                                        <ResponsiveContainer>
+                                            <BarChart data={chartData} margin={{ top: 20, right: 30, left: 0, bottom: 5 }}>
+                                                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+                                                <XAxis
+                                                    dataKey={labelKey}
+                                                    stroke="#94a3b8"
+                                                    tick={{ fontSize: 11 }}
+                                                    tickFormatter={(val) => val.length > 15 ? val.substring(0, 15) + '...' : val}
+                                                />
+                                                <YAxis
+                                                    stroke="#94a3b8"
+                                                    tick={{ fontSize: 11 }}
+                                                    tickFormatter={(val) => val >= 1000000 ? (val / 1000000).toFixed(1) + 'M' : val >= 1000 ? (val / 1000).toFixed(1) + 'k' : val}
+                                                    width={45}
+                                                />
+                                                <Tooltip
+                                                    contentStyle={{ background: '#1e293b', border: 'none', borderRadius: '8px' }}
+                                                    formatter={(value) => [value.toLocaleString(), valKey]}
+                                                />
+                                                <Bar dataKey={valKey} fill="#3b82f6" radius={[4, 4, 0, 0]} barSize={40} />
+                                            </BarChart>
+                                        </ResponsiveContainer>
+                                    </div>
+                                    <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap' }}>
+                                        <div style={{ flex: 1, minWidth: '300px', height: '300px', background: 'rgba(255,255,255,0.02)', padding: '24px', borderRadius: '20px' }}>
+                                            <ResponsiveContainer>
+                                                <LineChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                                                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+                                                    <XAxis
+                                                        dataKey={labelKey}
+                                                        stroke="#94a3b8"
+                                                        tick={{ fontSize: 10 }}
+                                                        tickFormatter={(val) => val.length > 10 ? val.substring(0, 8) + '...' : val}
+                                                        interval="preserveStartEnd"
+                                                    />
+                                                    <YAxis
+                                                        stroke="#94a3b8"
+                                                        tick={{ fontSize: 10 }}
+                                                        tickFormatter={(val) => val >= 1000000 ? (val / 1000000).toFixed(1) + 'M' : val >= 1000 ? (val / 1000).toFixed(1) + 'k' : val}
+                                                        width={35}
+                                                    />
+                                                    <Tooltip
+                                                        contentStyle={{ background: '#1e293b', border: 'none', borderRadius: '8px', fontSize: '12px' }}
+                                                        formatter={(value) => [value.toLocaleString(), valKey]}
+                                                    />
+                                                    <Line type="monotone" dataKey={valKey} stroke="#82ca9d" strokeWidth={3} dot={{ r: 3 }} activeDot={{ r: 5 }} />
+                                                </LineChart>
+                                            </ResponsiveContainer>
+                                        </div>
+                                        <div style={{ flex: 1, minWidth: '300px', height: '300px', background: 'rgba(255,255,255,0.02)', padding: '24px', borderRadius: '20px' }}>
+                                            <ResponsiveContainer>
+                                                <PieChart>
+                                                    <Pie
+                                                        data={chartData.slice(0, 10)}
+                                                        dataKey={valKey}
+                                                        nameKey={labelKey}
+                                                        cx="40%"
+                                                        cy="50%"
+                                                        innerRadius={30}
+                                                        outerRadius={60}
+                                                        paddingAngle={2}
+                                                    >
+                                                        {chartData.map((entry, index) => <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />)}
+                                                    </Pie>
+                                                    <Tooltip contentStyle={{ background: '#1e293b', border: 'none' }} />
+                                                    <Legend
+                                                        layout="vertical"
+                                                        verticalAlign="middle"
+                                                        align="right"
+                                                        wrapperStyle={{ fontSize: '11px', width: '40%' }}
+                                                    />
+                                                </PieChart>
+                                            </ResponsiveContainer>
                                         </div>
                                     </div>
-                                )}
-                            </>
-                        ) : (
-                            <div style={{ padding: '100px', textAlign: 'center', opacity: 0.5 }}>
-                                <RefreshCcw size={32} className="animate-spin" style={{ marginBottom: '16px' }} />
-                                <p>Loading analytical snapshot...</p>
-                            </div>
-                        )}
+                                </div>
+                            );
+                        })()}
                     </div>
                 )}
 
                 {activeTab === 'reports' && (
-                    <div className="reporting-container" style={{ padding: '24px', height: '100%', display: 'flex', flexDirection: 'column' }}>
-                        <div style={{ marginBottom: '24px' }}>
-                            <h1 style={{ fontSize: '24px', fontWeight: 'bold' }}>Master Data Explorer</h1>
-                            <p style={{ color: '#94a3b8' }}>Dimensional breakdown of CO-PA records</p>
+                    <div className="reporting-container" style={{ padding: '24px', height: '100%', overflow: 'auto' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '24px' }}>
+                            <div>
+                                <h1 style={{ fontSize: '24px', fontWeight: 'bold' }}>PDF Report Generator</h1>
+                                <p style={{ color: '#94a3b8' }}>Download professional reports</p>
+                            </div>
+                            {currentQueryData && currentQueryData.length > 0 && (
+                                <button onClick={downloadPDF} style={{ background: '#3b82f6', color: '#fff', border: 'none', padding: '10px 20px', borderRadius: '10px', cursor: 'pointer', display: 'flex', items: 'center', gap: '8px' }}>
+                                    <FileText size={18} /> Download PDF
+                                </button>
+                            )}
                         </div>
 
-                        {reportingData.length > 0 ? (
-                            <div style={{ flex: 1, overflow: 'auto', background: 'rgba(255,255,255,0.02)', borderRadius: '16px', border: '1px solid rgba(255,255,255,0.1)' }}>
-                                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                                    <thead style={{ position: 'sticky', top: 0, background: '#1e293b' }}>
-                                        <tr>
-                                            {Object.keys(reportingData[0]).map(k => (
-                                                <th key={k} style={{ padding: '16px', textAlign: 'left', fontSize: '12px', color: '#94a3b8', textTransform: 'uppercase' }}>{k}</th>
-                                            ))}
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        {reportingData.map((row, i) => (
-                                            <tr key={i} style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-                                                {Object.values(row).map((v, j) => (
-                                                    <td key={j} style={{ padding: '16px', fontSize: '13px', color: '#e2e8f0' }}>
-                                                        {typeof v === 'number' ? v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : String(v)}
-                                                    </td>
-                                                ))}
+                        {currentQueryData && Array.isArray(currentQueryData) && currentQueryData.length > 0 && currentQueryData[0] ? (
+                            <div id="pdf-report-template" style={{ background: '#fff', color: '#000', padding: '40px', borderRadius: '16px', maxWidth: '1000px', margin: '0 auto' }}>
+                                <div style={{ borderBottom: '2px solid #3b82f6', paddingBottom: '20px', marginBottom: '30px' }}>
+                                    <h1 style={{ fontSize: '28px', color: '#1e293b', fontWeight: 'bold' }}>SAP CO-PA Analytics Report</h1>
+                                    <p style={{ color: '#64748b' }}>Generated on {new Date().toLocaleDateString()}</p>
+                                </div>
+                                <div style={{ background: '#f8fafc', padding: '20px', borderRadius: '12px', borderLeft: '4px solid #3b82f6', marginBottom: '30px' }}>
+                                    <h3 style={{ fontSize: '14px', color: '#64748b', textTransform: 'uppercase' }}>Query</h3>
+                                    <p style={{ fontSize: '18px', fontWeight: '500' }}>{vizTitle}</p>
+                                </div>
+                                <div style={{ marginBottom: '30px' }}>
+                                    <h3 style={{ fontSize: '14px', color: '#64748b', textTransform: 'uppercase', marginBottom: '12px' }}>Data Summary</h3>
+                                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+                                        <thead>
+                                            <tr style={{ background: '#f1f5f9' }}>
+                                                {Object.keys(currentQueryData[0]).map(k => <th key={k} style={{ padding: '10px', textAlign: 'left', color: '#475569' }}>{k}</th>)}
                                             </tr>
-                                        ))}
-                                    </tbody>
-                                </table>
+                                        </thead>
+                                        <tbody>
+                                            {currentQueryData.slice(0, 10).map((r, i) => (
+                                                <tr key={i} style={{ borderBottom: '1px solid #e2e8f0' }}>
+                                                    {Object.values(r).map((v, j) => <td key={j} style={{ padding: '10px', color: '#334155' }}>{v}</td>)}
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                                {/* Visualizations for PDF */}
+                                {(() => {
+                                    const chartData = currentQueryData;
+                                    const keys = Object.keys(chartData[0]);
+                                    const labelKey = keys.find(k => typeof chartData[0][k] === 'string') || keys[0];
+                                    const valKey = keys.find(k => typeof chartData[0][k] === 'number') || keys[1];
+                                    return (
+                                        <div style={{ marginBottom: '30px' }}>
+                                            <h3 style={{ fontSize: '14px', color: '#64748b', textTransform: 'uppercase', marginBottom: '20px' }}>Visual Analysis</h3>
+
+                                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '20px' }}>
+                                                {/* Horizontal Bar Chart */}
+                                                <div style={{ flex: '1 1 100%', height: '350px', background: '#f8fafc', padding: '20px', borderRadius: '12px', border: '1px solid #e2e8f0' }}>
+                                                    <h4 style={{ fontSize: '12px', color: '#64748b', marginBottom: '15px', textTransform: 'uppercase', fontWeight: 'bold' }}>{valKey.replace(/_/g, ' ')} Distribution</h4>
+                                                    <ResponsiveContainer>
+                                                        <BarChart layout="vertical" data={chartData.slice(0, 10)} margin={{ left: 20, right: 30, top: 10, bottom: 10 }}>
+                                                            <CartesianGrid strokeDasharray="3 3" horizontal={false} />
+                                                            <XAxis type="number" tick={{ fontSize: 10 }} />
+                                                            <YAxis type="category" dataKey={labelKey} tick={{ fontSize: 10 }} width={100} />
+                                                            <Tooltip cursor={{ fill: 'transparent' }} contentStyle={{ fontSize: '12px' }} />
+                                                            <Bar dataKey={valKey} fill="#3b82f6" radius={[0, 4, 4, 0]} barSize={24}>
+                                                                <LabelList dataKey={valKey} position="right" fontSize={10} formatter={(v) => typeof v === 'number' ? v.toLocaleString() : v} />
+                                                            </Bar>
+                                                        </BarChart>
+                                                    </ResponsiveContainer>
+                                                </div>
+
+                                                {/* Line Chart (Trend) */}
+                                                <div style={{ flex: '1 1 45%', minWidth: '300px', height: '300px', background: '#f8fafc', padding: '20px', borderRadius: '12px', border: '1px solid #e2e8f0' }}>
+                                                    <h4 style={{ fontSize: '12px', color: '#64748b', marginBottom: '15px', textTransform: 'uppercase', fontWeight: 'bold' }}>Trend Analysis</h4>
+                                                    <ResponsiveContainer>
+                                                        <LineChart data={chartData.slice(0, 15)} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                                                            <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                                                            <XAxis dataKey={labelKey} tick={{ fontSize: 10 }} />
+                                                            <YAxis tick={{ fontSize: 10 }} />
+                                                            <Tooltip contentStyle={{ fontSize: '12px' }} />
+                                                            <Line type="monotone" dataKey={valKey} stroke="#8884d8" strokeWidth={3} dot={{ r: 4, strokeWidth: 2 }} activeDot={{ r: 6 }} />
+                                                        </LineChart>
+                                                    </ResponsiveContainer>
+                                                </div>
+
+                                                {/* Pie Chart (Share) */}
+                                                <div style={{ flex: '1 1 45%', minWidth: '300px', height: '300px', background: '#f8fafc', padding: '20px', borderRadius: '12px', border: '1px solid #e2e8f0' }}>
+                                                    <h4 style={{ fontSize: '12px', color: '#64748b', marginBottom: '15px', textTransform: 'uppercase', fontWeight: 'bold' }}>Share Distribution</h4>
+                                                    <ResponsiveContainer>
+                                                        <PieChart>
+                                                            <Pie
+                                                                data={chartData.slice(0, 10)}
+                                                                dataKey={valKey}
+                                                                nameKey={labelKey}
+                                                                cx="35%"
+                                                                cy="50%"
+                                                                innerRadius={30}
+                                                                outerRadius={60}
+                                                                paddingAngle={2}
+                                                            >
+                                                                {chartData.map((entry, index) => <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />)}
+                                                            </Pie>
+                                                            <Tooltip contentStyle={{ fontSize: '12px' }} />
+                                                            <Legend
+                                                                layout="vertical"
+                                                                verticalAlign="middle"
+                                                                align="right"
+                                                                wrapperStyle={{ fontSize: '9px', width: '45%', lineHeight: '14px' }}
+                                                            />
+                                                        </PieChart>
+                                                    </ResponsiveContainer>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    );
+                                })()}
+                                <div style={{ textAlign: 'center', marginTop: '40px', borderTop: '1px solid #e2e8f0', paddingTop: '20px' }}>
+                                    <p style={{ fontSize: '12px', color: '#94a3b8' }}>Confidential - Generated by SAP AI Agent</p>
+                                </div>
                             </div>
                         ) : (
-                            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'rgba(255,255,255,0.02)', borderRadius: '16px', border: '1px dashed rgba(255,255,255,0.1)' }}>
-                                <Database size={48} color="#3b82f6" style={{ marginBottom: '16px', opacity: 0.5 }} />
-                                <h3 style={{ fontSize: '18px', marginBottom: '8px' }}>No Data Available</h3>
-                                <p style={{ color: '#94a3b8' }}>Check your backend connection or data source.</p>
+                            <div style={{ textAlign: 'center', padding: '60px', opacity: 0.5 }}>
+                                <FileText size={48} style={{ marginBottom: '16px' }} />
+                                <p>No report available. Ask a question in Chat first.</p>
                             </div>
                         )}
                     </div>
                 )}
             </main>
-
             <style>{`
                 .app-container { display: flex; height: 100vh; background: #0f172a; color: #fff; font-family: 'Inter', sans-serif; overflow: hidden; }
                 .sidebar { width: 280px; padding: 32px 24px; background: #020617; border-right: 1px solid rgba(255,255,255,0.1); display: flex; flexDirection: column; }
                 .main-content { flex: 1; display: flex; flexDirection: column; height: 100vh; background: radial-gradient(circle at 50% 50%, #1e293b 0%, #0f172a 100%); }
-                .dot-typing { position: relative; width: 6px; height: 6px; border-radius: 5px; background-color: #3b82f6; color: #3b82f6; animation: dotTyping 1.5s infinite linear; }
-                
-                @keyframes dotTyping {
-                    0% { box-shadow: 12px 0 0 0 #3b82f6, 24px 0 0 0 #3b82f6, 36px 0 0 0 #3b82f6; }
-                    33% { box-shadow: 12px -5px 0 0 #3b82f6, 24px 0 0 0 #3b82f6, 36px 0 0 0 #3b82f6; }
-                    66% { box-shadow: 12px 0 0 0 #3b82f6, 24px -5px 0 0 #3b82f6, 36px 0 0 0 #3b82f6; }
-                    100% { box-shadow: 12px 0 0 0 #3b82f6, 24px 0 0 0 #3b82f6, 36px -5px 0 0 #3b82f6; }
-                }
-
-                .animate-spin {
-                    animation: spin 1s linear infinite;
-                }
-                @keyframes spin {
-                    from { transform: rotate(0deg); }
-                    to { transform: rotate(360deg); }
-                }
-
-                /* Custom Scrollbar */
-                ::-webkit-scrollbar { width: 6px; height: 6px; }
+                .dot-typing { width: 8px; height: 8px; background: #3b82f6; border-radius: 50%; animation: bounce 1.4s infinite ease-in-out both; }
+                @keyframes bounce { 0%, 80%, 100% { transform: scale(0); } 40% { transform: scale(1); } }
+                ::-webkit-scrollbar { width: 6px; }
                 ::-webkit-scrollbar-track { background: transparent; }
-                ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); borderRadius: 10px; }
-                ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
+                ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); borderRadius: 10px; }
             `}</style>
         </div>
     );
 };
-
-const KpiCard = ({ label, value, color }) => (
-    <div style={{ background: 'rgba(255,255,255,0.03)', padding: '24px', borderRadius: '16px', borderLeft: `4px solid ${color}` }}>
-        <p style={{ color: '#94a3b8', fontSize: '13px', marginBottom: '8px' }}>{label}</p>
-        <p style={{ fontSize: '24px', fontWeight: 'bold' }}>{value}</p>
-    </div>
-);
 
 const SidebarItem = ({ icon, label, active, onClick }) => (
     <div onClick={onClick} style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '12px 16px', borderRadius: '12px', background: active ? 'rgba(59, 130, 246, 0.1)' : 'transparent', color: active ? '#3b82f6' : '#94a3b8', cursor: 'pointer', transition: 'all 0.2s' }}>
@@ -404,75 +545,5 @@ const SidebarItem = ({ icon, label, active, onClick }) => (
         <span style={{ fontWeight: active ? '600' : '400' }}>{label}</span>
     </div>
 );
-
-// --- Simple Line Chart ---
-const LineChart = ({ data, labelKey, valKey }) => {
-    const maxVal = Math.max(...data.map(d => d[valKey])) || 1;
-    const points = data.map((d, i) => {
-        const x = (i / (data.length - 1)) * 300;
-        const y = 150 - (d[valKey] / maxVal) * 120;
-        return `${x},${y}`;
-    }).join(' ');
-    return (
-        <svg viewBox="0 0 300 150" style={{ width: '100%', height: '160px' }}>
-            <polyline fill="none" stroke="#3b82f6" strokeWidth="3" points={points} />
-            {data.map((d, i) => (
-                <circle key={i} cx={(i / (data.length - 1)) * 300} cy={150 - (d[valKey] / maxVal) * 120} r="4" fill="#3b82f6" />
-            ))}
-        </svg>
-    );
-};
-
-// --- Simple Smart Chart ---
-const SmartChart = ({ data, query }) => {
-    if (!data || data.length === 0) return null;
-
-    // Use LineChart for trends
-    if (query?.toLowerCase().includes('trend')) {
-        const keys = Object.keys(data[0]);
-        const labelKey = keys[0];
-        const valKey = keys.find(k => typeof data[0][k] === 'number') || keys[1];
-        return <LineChart data={data.slice(0, 20)} labelKey={labelKey} valKey={valKey} />;
-    }
-
-    // Default: Render as Table
-    const headers = Object.keys(data[0]);
-
-    return (
-        <div style={{ overflowX: 'auto', background: 'rgba(255,255,255,0.02)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.1)', marginTop: '16px' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px', whiteSpace: 'nowrap' }}>
-                <thead>
-                    <tr style={{ background: 'rgba(255,255,255,0.05)', borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
-                        {headers.map(h => (
-                            <th key={h} style={{ padding: '12px 16px', textAlign: 'left', color: '#94a3b8', fontWeight: '600', textTransform: 'uppercase', fontSize: '11px', letterSpacing: '0.05em' }}>
-                                {h.replace(/_/g, ' ')}
-                            </th>
-                        ))}
-                    </tr>
-                </thead>
-                <tbody>
-                    {data.slice(0, 100).map((row, i) => (
-                        <tr key={i} style={{ borderBottom: i === data.length - 1 ? 'none' : '1px solid rgba(255,255,255,0.05)' }}>
-                            {headers.map(h => {
-                                const val = row[h];
-                                const isNum = typeof val === 'number';
-                                return (
-                                    <td key={h} style={{ padding: '12px 16px', color: '#e2e8f0' }}>
-                                        {isNum ? val.toLocaleString(undefined, { maximumFractionDigits: 2 }) : val}
-                                    </td>
-                                );
-                            })}
-                        </tr>
-                    ))}
-                </tbody>
-            </table>
-            {data.length > 100 && (
-                <div style={{ padding: '8px 16px', fontSize: '11px', color: '#64748b', textAlign: 'center', background: 'rgba(0,0,0,0.1)' }}>
-                    Showing first 100 of {data.length} records
-                </div>
-            )}
-        </div>
-    );
-};
 
 export default App;
